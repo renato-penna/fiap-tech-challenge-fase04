@@ -71,7 +71,7 @@ def combined_detection(video_path, output_path):
 
 # Executar
 script_dir = os.path.dirname(os.path.abspath(__file__))
-input_video_path = os.path.join(script_dir, 'video.mp4')
-output_video_path = os.path.join(script_dir, 'output_combined.mp4')
+input_video_path = os.path.join(script_dir, 'video/video.mp4')
+output_video_path = os.path.join(script_dir, 'video/output_combined.mp4')
 
 combined_detection(input_video_path, output_video_path)

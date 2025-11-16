@@ -59,8 +59,8 @@ def detect_emotions(video_path, output_path):
 
 # Caminho para o arquivo de vídeo na mesma pasta do script
 script_dir = os.path.dirname(os.path.abspath(__file__))
-input_video_path = os.path.join(script_dir, 'video.mp4')  # Substitua 'meu_video.mp4' pelo nome do seu vídeo
-output_video_path = os.path.join(script_dir, 'output_video.mp4')  # Nome do vídeo de saída
+input_video_path = os.path.join(script_dir, 'video/video.mp4')  # Substitua 'meu_video.mp4' pelo nome do seu vídeo
+output_video_path = os.path.join(script_dir, 'video/output_video.mp4')  # Nome do vídeo de saída
 
 # Chamar a função para detectar emoções no vídeo e salvar o vídeo processado
 detect_emotions(input_video_path, output_video_path)

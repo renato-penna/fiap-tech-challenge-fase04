@@ -2,13 +2,26 @@ import cv2
 from deepface import DeepFace
 import mediapipe as mp
 import os
+import numpy as np
 from tqdm import tqdm
 
 def combined_detection(video_path, output_path):
-    # Inicializar MediaPipe Pose
+    # Inicializar MediaPipe Pose com parâmetros otimizados
     mp_pose = mp.solutions.pose
-    pose = mp_pose.Pose()
+    pose = mp_pose.Pose(
+        static_image_mode=False,
+        model_complexity=2,
+        smooth_landmarks=True,
+        enable_segmentation=False,
+        min_detection_confidence=0.3,  # Reduzido para detectar mais
+        min_tracking_confidence=0.3
+    )
     mp_drawing = mp.solutions.drawing_utils
+    mp_drawing_styles = mp.solutions.drawing_styles
+    
+    # Variáveis para otimização
+    last_pose_landmarks = None
+    frames_without_detection = 0
 
     # Capturar vídeo
     cap = cv2.VideoCapture(video_path)
@@ -28,17 +41,47 @@ def combined_detection(video_path, output_path):
     out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
 
     # Processar frames
-    for _ in tqdm(range(total_frames), desc="Processando vídeo"):
+    for frame_idx in tqdm(range(total_frames), desc="Processando vídeo"):
         ret, frame = cap.read()
         if not ret:
             break
 
-        # Detecção de pose
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        # Pré-processamento: melhorar contraste e iluminação
+        frame_enhanced = cv2.convertScaleAbs(frame, alpha=1.1, beta=10)
+        
+        # Equalização de histograma para melhor detecção
+        lab = cv2.cvtColor(frame_enhanced, cv2.COLOR_BGR2LAB)
+        l, a, b = cv2.split(lab)
+        l = cv2.equalizeHist(l)
+        lab = cv2.merge([l, a, b])
+        frame_enhanced = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+        
+        # Detecção de pose com MediaPipe
+        rgb_frame = cv2.cvtColor(frame_enhanced, cv2.COLOR_BGR2RGB)
         pose_results = pose.process(rgb_frame)
         
         if pose_results.pose_landmarks:
-            mp_drawing.draw_landmarks(frame, pose_results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
+            last_pose_landmarks = pose_results.pose_landmarks
+            frames_without_detection = 0
+            
+            # Desenhar landmarks com estilo
+            mp_drawing.draw_landmarks(
+                frame,
+                pose_results.pose_landmarks,
+                mp_pose.POSE_CONNECTIONS,
+                landmark_drawing_spec=mp_drawing_styles.get_default_pose_landmarks_style()
+            )
+        elif last_pose_landmarks is not None and frames_without_detection < 5:
+            # Usar última pose detectada se falhar por poucos frames
+            frames_without_detection += 1
+            mp_drawing.draw_landmarks(
+                frame,
+                last_pose_landmarks,
+                mp_pose.POSE_CONNECTIONS,
+                landmark_drawing_spec=mp_drawing_styles.get_default_pose_landmarks_style()
+            )
+        else:
+            frames_without_detection += 1
 
         # Detecção de rostos e emoções com RetinaFace
         try:
@@ -71,7 +114,7 @@ def combined_detection(video_path, output_path):
 
 # Executar
 script_dir = os.path.dirname(os.path.abspath(__file__))
-input_video_path = os.path.join(script_dir, 'video/video.mp4')
-output_video_path = os.path.join(script_dir, 'video/output_combined.mp4')
+input_video_path = os.path.join(script_dir, 'video/5patetas.mp4')
+output_video_path = os.path.join(script_dir, 'video/5patetas_detection.mp4')
 
 combined_detection(input_video_path, output_video_path)

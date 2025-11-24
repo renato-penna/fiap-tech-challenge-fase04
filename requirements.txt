@@ -1,8 +1,9 @@
-opencv-contrib-python==4.11.0.86
-mediapipe==0.10.21
-deepface==0.0.95
-tqdm==4.67.1
 numpy<2
 protobuf<5,>=4.25.3
 tensorflow==2.15.0
 tf-keras==2.15.0
+opencv-contrib-python==4.11.0.86
+tqdm==4.67.1
+mediapipe==0.10.21
+deepface==0.0.95
+ultralytics

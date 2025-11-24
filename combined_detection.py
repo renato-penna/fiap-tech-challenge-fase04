@@ -1,27 +1,21 @@
 import cv2
 from deepface import DeepFace
-import mediapipe as mp
+from ultralytics import YOLO
 import os
 import numpy as np
 from tqdm import tqdm
 
 def combined_detection(video_path, output_path):
-    # Inicializar MediaPipe Pose com parâmetros otimizados
-    mp_pose = mp.solutions.pose
-    pose = mp_pose.Pose(
-        static_image_mode=False,
-        model_complexity=2,
-        smooth_landmarks=True,
-        enable_segmentation=False,
-        min_detection_confidence=0.3,  # Reduzido para detectar mais
-        min_tracking_confidence=0.3
-    )
-    mp_drawing = mp.solutions.drawing_utils
-    mp_drawing_styles = mp.solutions.drawing_styles
+    # Inicializar YOLOv11-pose
+    yolo_pose = YOLO('yolo11n-pose.pt')
     
-    # Variáveis para otimização
-    last_pose_landmarks = None
-    frames_without_detection = 0
+    # Conexões do skeleton (COCO format)
+    skeleton = [
+        [16, 14], [14, 12], [17, 15], [15, 13], [12, 13],
+        [6, 12], [7, 13], [6, 7], [6, 8], [7, 9],
+        [8, 10], [9, 11], [2, 3], [1, 2], [1, 3],
+        [2, 4], [3, 5], [4, 6], [5, 7]
+    ]
 
     # Capturar vídeo
     cap = cv2.VideoCapture(video_path)
@@ -41,47 +35,33 @@ def combined_detection(video_path, output_path):
     out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
 
     # Processar frames
-    for frame_idx in tqdm(range(total_frames), desc="Processando vídeo"):
+    for _ in tqdm(range(total_frames), desc="Processando vídeo"):
         ret, frame = cap.read()
         if not ret:
             break
 
-        # Pré-processamento: melhorar contraste e iluminação
-        frame_enhanced = cv2.convertScaleAbs(frame, alpha=1.1, beta=10)
+        # Detecção de pose com YOLOv11
+        yolo_results = yolo_pose(frame, conf=0.3, verbose=False)
         
-        # Equalização de histograma para melhor detecção
-        lab = cv2.cvtColor(frame_enhanced, cv2.COLOR_BGR2LAB)
-        l, a, b = cv2.split(lab)
-        l = cv2.equalizeHist(l)
-        lab = cv2.merge([l, a, b])
-        frame_enhanced = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
-        
-        # Detecção de pose com MediaPipe
-        rgb_frame = cv2.cvtColor(frame_enhanced, cv2.COLOR_BGR2RGB)
-        pose_results = pose.process(rgb_frame)
-        
-        if pose_results.pose_landmarks:
-            last_pose_landmarks = pose_results.pose_landmarks
-            frames_without_detection = 0
-            
-            # Desenhar landmarks com estilo
-            mp_drawing.draw_landmarks(
-                frame,
-                pose_results.pose_landmarks,
-                mp_pose.POSE_CONNECTIONS,
-                landmark_drawing_spec=mp_drawing_styles.get_default_pose_landmarks_style()
-            )
-        elif last_pose_landmarks is not None and frames_without_detection < 5:
-            # Usar última pose detectada se falhar por poucos frames
-            frames_without_detection += 1
-            mp_drawing.draw_landmarks(
-                frame,
-                last_pose_landmarks,
-                mp_pose.POSE_CONNECTIONS,
-                landmark_drawing_spec=mp_drawing_styles.get_default_pose_landmarks_style()
-            )
-        else:
-            frames_without_detection += 1
+        for result in yolo_results:
+            if result.keypoints is not None and len(result.keypoints.xy) > 0:
+                for person_kpts in result.keypoints.xy:
+                    kpts = person_kpts.cpu().numpy()
+                    
+                    # Desenhar skeleton
+                    for connection in skeleton:
+                        pt1_idx, pt2_idx = connection[0] - 1, connection[1] - 1
+                        if pt1_idx < len(kpts) and pt2_idx < len(kpts):
+                            pt1 = kpts[pt1_idx]
+                            pt2 = kpts[pt2_idx]
+                            if pt1[0] > 0 and pt1[1] > 0 and pt2[0] > 0 and pt2[1] > 0:
+                                cv2.line(frame, (int(pt1[0]), int(pt1[1])), 
+                                        (int(pt2[0]), int(pt2[1])), (0, 255, 0), 2)
+                    
+                    # Desenhar keypoints
+                    for x, y in kpts:
+                        if x > 0 and y > 0:
+                            cv2.circle(frame, (int(x), int(y)), 4, (0, 0, 255), -1)
 
         # Detecção de rostos e emoções com RetinaFace
         try:
@@ -114,7 +94,7 @@ def combined_detection(video_path, output_path):
 
 # Executar
 script_dir = os.path.dirname(os.path.abspath(__file__))
-input_video_path = os.path.join(script_dir, 'video/5patetas.mp4')
-output_video_path = os.path.join(script_dir, 'video/5patetas_detection.mp4')
+input_video_path = os.path.join(script_dir, 'video/medico.mp4')
+output_video_path = os.path.join(script_dir, 'video/medico_detection.mp4')
 
 combined_detection(input_video_path, output_video_path)

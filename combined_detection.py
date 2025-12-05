@@ -12,33 +12,52 @@ def detect_activity(keypoints):
     if len(keypoints) < 17:
         return "unknown"
     
-    # Keypoints: 0-nose, 5-left_shoulder, 6-right_shoulder, 11-left_hip, 12-right_hip
+    # Keypoints COCO: 0-nose, 5-left_shoulder, 6-right_shoulder, 11-left_hip, 12-right_hip
     # 13-left_knee, 14-right_knee, 15-left_ankle, 16-right_ankle
     
+    nose = keypoints[0]
     shoulders = keypoints[5:7]
     hips = keypoints[11:13]
     knees = keypoints[13:15]
+    ankles = keypoints[15:17]
     
-    # Verificar se keypoints estão visíveis
-    if all(k[0] > 0 and k[1] > 0 for k in [shoulders[0], shoulders[1], hips[0], hips[1]]):
-        # Calcular ângulos e posições
-        shoulder_y = (shoulders[0][1] + shoulders[1][1]) / 2
-        hip_y = (hips[0][1] + hips[1][1]) / 2
-        
-        # Sentado: quadris e ombros próximos verticalmente
-        if abs(shoulder_y - hip_y) < 100:
-            return "sitting"
-        
-        # Em pé: quadris e ombros distantes verticalmente
-        elif abs(shoulder_y - hip_y) > 150:
-            # Verificar se joelhos estão visíveis para detectar caminhada
-            if knees[0][0] > 0 and knees[1][0] > 0:
-                return "standing"
+    # Verificar se keypoints principais estão visíveis
+    if not all(k[0] > 0 and k[1] > 0 for k in [shoulders[0], shoulders[1], hips[0], hips[1]]):
+        return "unknown"
+    
+    # Calcular posições médias
+    shoulder_y = (shoulders[0][1] + shoulders[1][1]) / 2
+    shoulder_x = (shoulders[0][0] + shoulders[1][0]) / 2
+    hip_y = (hips[0][1] + hips[1][1]) / 2
+    hip_x = (hips[0][0] + hips[1][0]) / 2
+    
+    # Calcular distância vertical entre ombros e quadris
+    vertical_distance = abs(shoulder_y - hip_y)
+    
+    # Calcular inclinação horizontal (para detectar deitado)
+    shoulder_width = abs(shoulders[0][0] - shoulders[1][0])
+    shoulder_height_diff = abs(shoulders[0][1] - shoulders[1][1])
+    
+    # Critério 1: Deitado - ombros muito alinhados horizontalmente E distância vertical pequena
+    if shoulder_height_diff < 20 and vertical_distance < 80:
+        return "lying_down"
+    
+    # Critério 2: Sentado - distância vertical pequena/média
+    if vertical_distance < 120:
+        # Verificar se joelhos estão visíveis e dobrados
+        if knees[0][0] > 0 and knees[1][0] > 0:
+            knee_y = (knees[0][1] + knees[1][1]) / 2
+            # Se joelhos estão acima dos quadris, provavelmente sentado
+            if knee_y < hip_y + 50:
+                return "sitting"
+        return "sitting"
+    
+    # Critério 3: Em pé - distância vertical grande
+    if vertical_distance >= 120:
+        # Verificar alinhamento vertical (corpo ereto)
+        horizontal_offset = abs(shoulder_x - hip_x)
+        if horizontal_offset < 50:  # Corpo relativamente alinhado
             return "standing"
-        
-        # Deitado: ombros e quadris alinhados horizontalmente
-        elif abs(shoulders[0][1] - shoulders[1][1]) < 30:
-            return "lying_down"
     
     return "unknown"
 
@@ -57,7 +76,10 @@ def combined_detection(video_path, output_path):
     previous_keypoints = {}
     previous_activities = {}  # Rastrear atividade anterior por pessoa
     previous_emotions = {}  # Rastrear emoção anterior por pessoa
+    activity_stability = {}  # Contador de estabilidade para atividades
+    emotion_stability = {}  # Contador de estabilidade para emoções
     anomaly_threshold = 100  # Limiar para movimento brusco
+    stability_threshold = 15  # Frames necessários para confirmar mudança (0.5s a 30fps)
     
     # Conexões do skeleton (COCO format)
     skeleton = [
@@ -129,10 +151,22 @@ def combined_detection(video_path, output_path):
                     activity_counter[activity] += 1
                     frame_activity_list.append(activity)
                     
-                    # Contar ocorrência (mudança de atividade)
-                    if person_idx not in previous_activities or previous_activities[person_idx] != activity:
-                        activity_occurrences[activity] += 1
+                    # Sistema de estabilização para contar ocorrências
+                    if person_idx not in previous_activities:
                         previous_activities[person_idx] = activity
+                        activity_stability[person_idx] = 0
+                        activity_occurrences[activity] += 1
+                    elif previous_activities[person_idx] != activity:
+                        # Atividade mudou, começar contador de estabilidade
+                        activity_stability[person_idx] += 1
+                        if activity_stability[person_idx] >= stability_threshold:
+                            # Mudança confirmada após frames estáveis
+                            activity_occurrences[activity] += 1
+                            previous_activities[person_idx] = activity
+                            activity_stability[person_idx] = 0
+                    else:
+                        # Atividade mantida, resetar contador
+                        activity_stability[person_idx] = 0
                     
                     # Desenhar skeleton
                     for connection in skeleton:
@@ -149,22 +183,13 @@ def combined_detection(video_path, output_path):
                         if x > 0 and y > 0:
                             cv2.circle(frame, (int(x), int(y)), 4, (0, 0, 255), -1)
                     
-                    # Mostrar atividade e anomalia no frame
+                    # Mostrar atividade no frame
                     if len(kpts) > 0:
                         nose = kpts[0]
                         if nose[0] > 0 and nose[1] > 0:
                             if activity != "unknown":
                                 cv2.putText(frame, activity, (int(nose[0]), int(nose[1])-30), 
                                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-                            
-                            # Marcar anomalia
-                            if is_anomaly:
-                                cv2.putText(frame, "ANOMALY!", (int(nose[0]), int(nose[1])-50), 
-                                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-                                # Desenhar círculo vermelho ao redor da pessoa
-                                center_x = int(np.mean([k[0] for k in kpts if k[0] > 0]))
-                                center_y = int(np.mean([k[1] for k in kpts if k[1] > 0]))
-                                cv2.circle(frame, (center_x, center_y), 80, (0, 0, 255), 3)
 
         # Detecção de rostos e emoções com RetinaFace
         try:
@@ -186,13 +211,39 @@ def combined_detection(video_path, output_path):
                     emotion_counter[dominant_emotion] += 1
                     frame_emotion_list.append(dominant_emotion)
                     
-                    # Contar ocorrência (mudança de emoção)
-                    face_id = f"{x}_{y}"  # ID simples baseado em posição
-                    if face_id not in previous_emotions or previous_emotions[face_id] != dominant_emotion:
-                        emotion_occurrences[dominant_emotion] += 1
+                    # Sistema de estabilização para contar ocorrências de emoção
+                    face_id = f"{x//50}_{y//50}"  # ID baseado em região (menos sensível)
+                    if face_id not in previous_emotions:
                         previous_emotions[face_id] = dominant_emotion
+                        emotion_stability[face_id] = 0
+                        emotion_occurrences[dominant_emotion] += 1
+                    elif previous_emotions[face_id] != dominant_emotion:
+                        # Emoção mudou, começar contador de estabilidade
+                        emotion_stability[face_id] += 1
+                        if emotion_stability[face_id] >= stability_threshold:
+                            # Mudança confirmada após frames estáveis
+                            emotion_occurrences[dominant_emotion] += 1
+                            previous_emotions[face_id] = dominant_emotion
+                            emotion_stability[face_id] = 0
+                    else:
+                        # Emoção mantida, resetar contador
+                        emotion_stability[face_id] = 0
                     
-                    cv2.putText(frame, dominant_emotion, (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (36, 255, 12), 2)
+                    # Posicionar label: acima se bbox baixo, ao lado se bbox alto
+                    frame_height, frame_width = frame.shape[:2]
+                    
+                    # Se altura do bbox ocupa mais de 60% da altura da imagem, colocar ao lado
+                    if h > (frame_height * 0.6):
+                        # Colocar ao lado direito
+                        text_x = x + w + 10
+                        text_y = y + h // 2
+                    else:
+                        # Colocar acima (padrão)
+                        text_x = x
+                        text_y = y - 10
+                    
+                    cv2.putText(frame, dominant_emotion, (text_x, text_y), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.9, (36, 255, 12), 2)
                 except:
                     pass
         except:

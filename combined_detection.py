@@ -15,7 +15,6 @@ def detect_activity(keypoints):
     # Keypoints COCO: 0-nose, 5-left_shoulder, 6-right_shoulder, 11-left_hip, 12-right_hip
     # 13-left_knee, 14-right_knee, 15-left_ankle, 16-right_ankle
     
-    nose = keypoints[0]
     shoulders = keypoints[5:7]
     hips = keypoints[11:13]
     knees = keypoints[13:15]
@@ -31,35 +30,102 @@ def detect_activity(keypoints):
     hip_y = (hips[0][1] + hips[1][1]) / 2
     hip_x = (hips[0][0] + hips[1][0]) / 2
     
-    # Calcular distância vertical entre ombros e quadris
-    vertical_distance = abs(shoulder_y - hip_y)
+    # Distância vertical entre ombros e quadris (altura do torso)
+    torso_height = abs(shoulder_y - hip_y)
     
-    # Calcular inclinação horizontal (para detectar deitado)
-    shoulder_width = abs(shoulders[0][0] - shoulders[1][0])
-    shoulder_height_diff = abs(shoulders[0][1] - shoulders[1][1])
+    # Alinhamento horizontal (corpo ereto vs inclinado)
+    horizontal_offset = abs(shoulder_x - hip_x)
     
-    # Critério 1: Deitado - ombros muito alinhados horizontalmente E distância vertical pequena
-    if shoulder_height_diff < 20 and vertical_distance < 80:
+    # Diferença de altura entre ombros (detectar deitado)
+    shoulder_tilt = abs(shoulders[0][1] - shoulders[1][1])
+    
+    # Verificar joelhos e tornozelos
+    knees_visible = knees[0][0] > 0 and knees[1][0] > 0
+    ankles_visible = ankles[0][0] > 0 and ankles[1][0] > 0
+    
+    if knees_visible:
+        knee_y = (knees[0][1] + knees[1][1]) / 2
+        hip_to_knee = knee_y - hip_y  # Positivo = joelhos abaixo
+    
+    if ankles_visible:
+        ankle_y = (ankles[0][1] + ankles[1][1]) / 2
+    
+    # CRITÉRIO 1: DEITADO
+    # Ombros muito inclinados (pessoa de lado/deitada)
+    if shoulder_tilt > 40:
+        return "lying_down"
+    # Ombros moderadamente inclinados + torso muito curto
+    if shoulder_tilt > 20 and torso_height < 60:
         return "lying_down"
     
-    # Critério 2: Sentado - distância vertical pequena/média
-    if vertical_distance < 120:
-        # Verificar se joelhos estão visíveis e dobrados
-        if knees[0][0] > 0 and knees[1][0] > 0:
-            knee_y = (knees[0][1] + knees[1][1]) / 2
-            # Se joelhos estão acima dos quadris, provavelmente sentado
-            if knee_y < hip_y + 50:
-                return "sitting"
-        return "sitting"
-    
-    # Critério 3: Em pé - distância vertical grande
-    if vertical_distance >= 120:
-        # Verificar alinhamento vertical (corpo ereto)
-        horizontal_offset = abs(shoulder_x - hip_x)
-        if horizontal_offset < 50:  # Corpo relativamente alinhado
+    # CRITÉRIO 2: EM PÉ
+    # Torso alto (pessoa ereta)
+    if torso_height > 130:
+        # Corpo razoavelmente alinhado
+        if horizontal_offset < 60:
+            if knees_visible:
+                # Joelhos bem abaixo dos quadris (pernas esticadas)
+                if hip_to_knee > 80:
+                    return "standing"
+            else:
+                # Joelhos não visíveis mas torso alto = provavelmente em pé
+                return "standing"
+        # Mesmo com corpo inclinado, se torso muito alto = em pé
+        if torso_height > 160:
             return "standing"
     
-    return "unknown"
+    # CRITÉRIO 3: SENTADO
+    # Torso curto/médio (pessoa com tronco comprimido)
+    if torso_height < 110:
+        if knees_visible:
+            # Joelhos próximos dos quadris (pernas dobradas)
+            if hip_to_knee < 120:
+                return "sitting"
+        # Torso muito curto = sentado mesmo sem ver joelhos
+        if torso_height < 90:
+            return "sitting"
+    
+    # Zona intermediária (110-130px) - usar joelhos como desempate
+    if 110 <= torso_height <= 130:
+        if knees_visible:
+            # Joelhos muito abaixo = em pé, próximos = sentado
+            if hip_to_knee > 100:
+                return "standing"
+            else:
+                return "sitting"
+        # Sem joelhos, usar torso: mais alto = em pé
+        if torso_height > 120:
+            return "standing"
+        else:
+            return "sitting"
+    
+    # Fallback
+    if torso_height >= 130:
+        return "standing"
+    else:
+        return "sitting"
+
+def detect_scene_change(frame1, frame2, threshold=0.3):
+    """Detecta mudança de cena usando diferença de histograma"""
+    if frame1 is None or frame2 is None:
+        return False
+    
+    # Calcular histogramas para cada canal
+    hist1 = [cv2.calcHist([frame1], [i], None, [256], [0, 256]) for i in range(3)]
+    hist2 = [cv2.calcHist([frame2], [i], None, [256], [0, 256]) for i in range(3)]
+    
+    # Normalizar histogramas
+    hist1 = [cv2.normalize(h, h).flatten() for h in hist1]
+    hist2 = [cv2.normalize(h, h).flatten() for h in hist2]
+    
+    # Calcular correlação para cada canal
+    correlations = [cv2.compareHist(h1, h2, cv2.HISTCMP_CORREL) for h1, h2 in zip(hist1, hist2)]
+    
+    # Média das correlações
+    avg_correlation = np.mean(correlations)
+    
+    # Se correlação baixa, é mudança de cena
+    return avg_correlation < (1 - threshold)
 
 def combined_detection(video_path, output_path):
     # Inicializar YOLOv11-pose
@@ -73,6 +139,8 @@ def combined_detection(video_path, output_path):
     frame_emotions = []
     frame_activities = []
     anomaly_count = 0
+    scene_changes = 0
+    previous_frame = None
     previous_keypoints = {}
     previous_activities = {}  # Rastrear atividade anterior por pessoa
     previous_emotions = {}  # Rastrear emoção anterior por pessoa
@@ -80,6 +148,7 @@ def combined_detection(video_path, output_path):
     emotion_stability = {}  # Contador de estabilidade para emoções
     anomaly_threshold = 100  # Limiar para movimento brusco
     stability_threshold = 15  # Frames necessários para confirmar mudança (0.5s a 30fps)
+    scene_change_threshold = 0.4  # Threshold para detecção de cena
     
     # Conexões do skeleton (COCO format)
     skeleton = [
@@ -112,6 +181,20 @@ def combined_detection(video_path, output_path):
         if not ret:
             break
 
+        # Detectar mudança de cena
+        is_scene_change = False
+        if previous_frame is not None:
+            is_scene_change = detect_scene_change(previous_frame, frame, scene_change_threshold)
+            if is_scene_change:
+                scene_changes += 1
+                # Resetar rastreamento em mudança de cena
+                previous_keypoints.clear()
+                previous_activities.clear()
+                previous_emotions.clear()
+                activity_stability.clear()
+                emotion_stability.clear()
+        
+        previous_frame = frame.copy()
         frame_emotion_list = []
         frame_activity_list = []
 
@@ -139,9 +222,11 @@ def combined_detection(video_path, output_path):
                             max_movement = np.max(valid_movements)
                             
                             # Detectar movimento anômalo (muito brusco ou atípico)
-                            if max_movement > anomaly_threshold or avg_movement > anomaly_threshold / 2:
-                                is_anomaly = True
-                                anomaly_count += 1
+                            # Ignorar se for mudança de cena
+                            if not is_scene_change:
+                                if max_movement > anomaly_threshold or avg_movement > anomaly_threshold / 2:
+                                    is_anomaly = True
+                                    anomaly_count += 1
                     
                     # Armazenar keypoints atuais
                     previous_keypoints[person_idx] = kpts.copy()
@@ -259,10 +344,10 @@ def combined_detection(video_path, output_path):
     
     # Gerar resumo
     generate_summary(video_path, output_path, emotion_counter, activity_counter, 
-                    emotion_occurrences, activity_occurrences, anomaly_count, total_frames, fps)
+                    emotion_occurrences, activity_occurrences, anomaly_count, scene_changes, total_frames, fps)
 
 def generate_summary(video_path, output_path, emotion_counter, activity_counter, 
-                    emotion_occurrences, activity_occurrences, anomaly_count, total_frames, fps):
+                    emotion_occurrences, activity_occurrences, anomaly_count, scene_changes, total_frames, fps):
     """Gera resumo das atividades e emoções detectadas"""
     duration = total_frames / fps
     
@@ -281,6 +366,10 @@ def generate_summary(video_path, output_path, emotion_counter, activity_counter,
         "activities": {
             "by_frames": dict(activity_counter.most_common()),
             "by_occurrences": dict(activity_occurrences.most_common())
+        },
+        "scenes": {
+            "total_scene_changes": scene_changes,
+            "average_scene_duration": round(duration / (scene_changes + 1), 2) if scene_changes > 0 else duration
         },
         "anomalies": {
             "total_anomalies_detected": anomaly_count,
@@ -316,6 +405,11 @@ def generate_summary(video_path, output_path, emotion_counter, activity_counter,
         frames = activity_counter[activity]
         percentage = (count / sum(activity_occurrences.values())) * 100 if sum(activity_occurrences.values()) > 0 else 0
         print(f"  {activity}: {count} vezes ({frames} frames, {percentage:.1f}%)")
+    
+    print(f"\nCENAS DETECTADAS:")
+    print(f"  Total de mudanças de cena: {scene_changes}")
+    avg_scene_duration = duration / (scene_changes + 1) if scene_changes > 0 else duration
+    print(f"  Duração média por cena: {avg_scene_duration:.2f}s")
     
     print(f"\nANOMALIAS DETECTADAS:")
     print(f"  Total de anomalias: {anomaly_count} vezes")

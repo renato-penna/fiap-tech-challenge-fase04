@@ -50,60 +50,44 @@ def detect_activity(keypoints):
     if ankles_visible:
         ankle_y = (ankles[0][1] + ankles[1][1]) / 2
     
-    # CRITÉRIO 1: DEITADO
-    # Ombros muito inclinados (pessoa de lado/deitada)
-    if shoulder_tilt > 40:
-        return "lying_down"
-    # Ombros moderadamente inclinados + torso muito curto
-    if shoulder_tilt > 20 and torso_height < 60:
-        return "lying_down"
-    
-    # CRITÉRIO 2: EM PÉ
-    # Torso alto (pessoa ereta)
-    if torso_height > 130:
-        # Corpo razoavelmente alinhado
-        if horizontal_offset < 60:
-            if knees_visible:
-                # Joelhos bem abaixo dos quadris (pernas esticadas)
-                if hip_to_knee > 80:
-                    return "standing"
-            else:
-                # Joelhos não visíveis mas torso alto = provavelmente em pé
-                return "standing"
-        # Mesmo com corpo inclinado, se torso muito alto = em pé
-        if torso_height > 160:
+    # CRITÉRIO 1: EM PÉ (prioridade alta)
+    # Torso alto = pessoa ereta
+    if torso_height > 120:
+        # Se torso muito alto, sempre em pé
+        if torso_height > 150:
             return "standing"
-    
-    # CRITÉRIO 3: SENTADO
-    # Torso curto/médio (pessoa com tronco comprimido)
-    if torso_height < 110:
+        # Torso médio-alto: verificar se não está sentado
         if knees_visible:
-            # Joelhos próximos dos quadris (pernas dobradas)
-            if hip_to_knee < 120:
-                return "sitting"
-        # Torso muito curto = sentado mesmo sem ver joelhos
-        if torso_height < 90:
-            return "sitting"
-    
-    # Zona intermediária (110-130px) - usar joelhos como desempate
-    if 110 <= torso_height <= 130:
-        if knees_visible:
-            # Joelhos muito abaixo = em pé, próximos = sentado
-            if hip_to_knee > 100:
+            # Joelhos bem abaixo = em pé
+            if hip_to_knee > 70:
                 return "standing"
-            else:
+            # Joelhos próximos + torso não tão alto = sentado
+            if hip_to_knee < 50 and torso_height < 140:
                 return "sitting"
-        # Sem joelhos, usar torso: mais alto = em pé
-        if torso_height > 120:
-            return "standing"
-        else:
+        # Sem joelhos visíveis mas torso alto = em pé
+        return "standing"
+    
+    # CRITÉRIO 2: SENTADO
+    # Torso curto/médio (tronco comprimido)
+    if torso_height < 120:
+        # Torso muito curto = sentado
+        if torso_height < 80:
             return "sitting"
+        # Torso médio: verificar joelhos
+        if knees_visible:
+            # Joelhos próximos = sentado
+            if hip_to_knee < 80:
+                return "sitting"
+        # Sem joelhos, torso médio-baixo = sentado
+        return "sitting"
+    
+    # CRITÉRIO 3: DEITADO (última prioridade, muito restritivo)
+    # Apenas se ombros MUITO inclinados E torso muito curto E corpo horizontal
+    if shoulder_tilt > 60 and torso_height < 60 and horizontal_offset < 40:
+        return "lying_down"
     
     # Fallback
-    if torso_height >= 130:
-        return "standing"
-    else:
-        return "sitting"
+    return "standing"
 
 def detect_scene_change(frame1, frame2, threshold=0.3):
     """Detecta mudança de cena usando diferença de histograma"""
